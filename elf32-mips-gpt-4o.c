@@ -1664,43 +1664,28 @@ static reloc_howto_type elf_mips_eh_howto =
 /* Set the GP value for OUTPUT_BFD.  Returns FALSE if this is a
    dangerous relocation.  */
 
-static bool
-mips_elf_assign_gp (bfd *output_bfd, bfd_vma *pgp)
-{
-  unsigned int count;
-  asymbol **sym;
-  unsigned int i;
+bool mips_elf_assign_gp(bfd *output_bfd, bfd_vma *pgp) {
+  unsigned int count = bfd_get_symcount(output_bfd);
+  asymbol **sym = bfd_get_outsymbols(output_bfd);
 
-  if (output_bfd == NULL || pgp == NULL)
-    return false;
-
-  *pgp = _bfd_get_gp_value (output_bfd);
-  if (*pgp)
+  *pgp = _bfd_get_gp_value(output_bfd);
+  if (*pgp) {
     return true;
+  }
 
-  count = bfd_get_symcount (output_bfd);
-  sym = bfd_get_outsymbols (output_bfd);
-
-  if (sym == NULL)
-    {
-      *pgp = 4;
-      _bfd_set_gp_value (output_bfd, *pgp);
-      return false;
+  if (sym != NULL) {
+    for (unsigned int i = 0; i < count; ++i, ++sym) {
+      const char *name = bfd_asymbol_name(*sym);
+      if (strcmp(name, "_gp") == 0) {
+        *pgp = bfd_asymbol_value(*sym);
+        _bfd_set_gp_value(output_bfd, *pgp);
+        return true;
+      }
     }
-
-  for (i = 0; i < count; i++)
-    {
-      const char *name = bfd_asymbol_name (sym[i]);
-      if (name != NULL && strcmp (name, "_gp") == 0)
-        {
-          *pgp = bfd_asymbol_value (sym[i]);
-          _bfd_set_gp_value (output_bfd, *pgp);
-          return true;
-        }
-    }
-
+  }
+  
   *pgp = 4;
-  _bfd_set_gp_value (output_bfd, *pgp);
+  _bfd_set_gp_value(output_bfd, *pgp);
   return false;
 }
 
@@ -1710,36 +1695,24 @@ mips_elf_assign_gp (bfd *output_bfd, bfd_vma *pgp)
    target data.  We don't need to adjust the symbol value for an
    external symbol if we are producing relocatable output.  */
 
-static bfd_reloc_status_type
-mips_elf_final_gp (bfd *output_bfd, asymbol *symbol, bool relocatable,
-		   char **error_message, bfd_vma *pgp)
-{
-  if (output_bfd == NULL)
-    {
-      *pgp = 0;
-      return bfd_reloc_undefined;
+static bfd_reloc_status_type mips_elf_final_gp(bfd *output_bfd, asymbol *symbol, bool relocatable, char **error_message, bfd_vma *pgp) {
+    if (output_bfd == NULL) {
+        *pgp = 0;
+        return bfd_reloc_undefined;
     }
 
-  *pgp = _bfd_get_gp_value (output_bfd);
-  
-  if (*pgp != 0)
-    return bfd_reloc_ok;
+    *pgp = _bfd_get_gp_value(output_bfd);
+    if (*pgp == 0) {
+        if (relocatable && (symbol->flags & BSF_SECTION_SYM) != 0) {
+            *pgp = symbol->section->output_section->vma;
+            _bfd_set_gp_value(output_bfd, *pgp);
+        } else if (!relocatable && !mips_elf_assign_gp(output_bfd, pgp)) {
+            *error_message = (char *)_("GP relative relocation when _gp not defined");
+            return bfd_reloc_dangerous;
+        }
+    }
     
-  if (!relocatable && (symbol->flags & BSF_SECTION_SYM) == 0)
     return bfd_reloc_ok;
-
-  if (relocatable)
-    {
-      *pgp = symbol->section->output_section->vma;
-      _bfd_set_gp_value (output_bfd, *pgp);
-    }
-  else if (!mips_elf_assign_gp (output_bfd, pgp))
-    {
-      *error_message = (char *) _("GP relative relocation when _gp not defined");
-      return bfd_reloc_dangerous;
-    }
-
-  return bfd_reloc_ok;
 }
 
 /* Do a R_MIPS_GPREL16 relocation.  This is a 16 bit value which must
@@ -1748,51 +1721,34 @@ mips_elf_final_gp (bfd *output_bfd, asymbol *symbol, bool relocatable,
    cleverly because the entries in the .lit8 and .lit4 sections can be
    merged.  */
 
-bfd_reloc_status_type
-_bfd_mips_elf32_gprel16_reloc (bfd *abfd, arelent *reloc_entry,
-			       asymbol *symbol, void *data,
-			       asection *input_section, bfd *output_bfd,
-			       char **error_message)
-{
-  bool relocatable;
+bfd_reloc_status_type _bfd_mips_elf32_gprel16_reloc(
+    bfd *abfd, arelent *reloc_entry, asymbol *symbol, void *data,
+    asection *input_section, bfd *output_bfd, char **error_message) {
+  if (literal_reloc_p(reloc_entry->howto->type) && output_bfd != NULL &&
+      !(symbol->flags & BSF_SECTION_SYM) && (symbol->flags & BSF_LOCAL)) {
+    *error_message = (char *)_("literal relocation occurs for an external symbol");
+    return bfd_reloc_outofrange;
+  }
+
+  bool relocatable = output_bfd != NULL;
   bfd_reloc_status_type ret;
-  bfd_byte *location;
   bfd_vma gp;
 
-  if (!reloc_entry || !symbol || !data || !input_section || !error_message)
-    return bfd_reloc_other;
-
-  if (literal_reloc_p (reloc_entry->howto->type)
-      && output_bfd != NULL
-      && (symbol->flags & BSF_SECTION_SYM) == 0
-      && (symbol->flags & BSF_LOCAL) != 0)
-    {
-      *error_message = (char *)
-	_("literal relocation occurs for an external symbol");
-      return bfd_reloc_outofrange;
-    }
-
-  relocatable = (output_bfd != NULL);
-  if (!relocatable)
+  if (!relocatable) {
     output_bfd = input_section->output_section->owner;
+  }
 
-  ret = mips_elf_final_gp (output_bfd, symbol, relocatable, error_message,
-			   &gp);
+  ret = mips_elf_final_gp(output_bfd, symbol, relocatable, error_message, &gp);
   if (ret != bfd_reloc_ok)
     return ret;
 
-  if (!_bfd_mips_reloc_offset_in_range (abfd, input_section, reloc_entry,
-					check_shuffle))
+  if (!_bfd_mips_reloc_offset_in_range(abfd, input_section, reloc_entry, check_shuffle))
     return bfd_reloc_outofrange;
 
-  location = (bfd_byte *) data + reloc_entry->address;
-  _bfd_mips_elf_reloc_unshuffle (abfd, reloc_entry->howto->type, false,
-				 location);
-  ret = _bfd_mips_elf_gprel16_with_gp (abfd, symbol, reloc_entry,
-				       input_section, relocatable,
-				       data, gp);
-  _bfd_mips_elf_reloc_shuffle (abfd, reloc_entry->howto->type, !relocatable,
-			       location);
+  bfd_byte *location = (bfd_byte *)data + reloc_entry->address;
+  _bfd_mips_elf_reloc_unshuffle(abfd, reloc_entry->howto->type, false, location);
+  ret = _bfd_mips_elf_gprel16_with_gp(abfd, symbol, reloc_entry, input_section, relocatable, data, gp);
+  _bfd_mips_elf_reloc_shuffle(abfd, reloc_entry->howto->type, !relocatable, location);
 
   return ret;
 }
@@ -1800,193 +1756,123 @@ _bfd_mips_elf32_gprel16_reloc (bfd *abfd, arelent *reloc_entry,
 /* Do a R_MIPS_GPREL32 relocation.  This is a 32 bit value which must
    become the offset from the gp register.  */
 
-static bfd_reloc_status_type
-mips_elf_gprel32_reloc (bfd *abfd, arelent *reloc_entry, asymbol *symbol,
-			void *data, asection *input_section, bfd *output_bfd,
-			char **error_message)
-{
-  bool relocatable;
-  bfd_reloc_status_type ret;
-  bfd_vma gp;
-
-  if (output_bfd != NULL
-      && (symbol->flags & BSF_SECTION_SYM) == 0
-      && (symbol->flags & BSF_LOCAL) != 0)
-    {
-      *error_message = (char *)
-	_("32bits gp relative relocation occurs for an external symbol");
-      return bfd_reloc_outofrange;
+bfd_reloc_status_type mips_elf_gprel32_reloc(bfd *abfd, arelent *reloc_entry, asymbol *symbol, void *data, asection *input_section, bfd *output_bfd, char **error_message) {
+    bool relocatable = output_bfd != NULL;
+    bfd_vma gp;
+    
+    if (relocatable && (symbol->flags & (BSF_SECTION_SYM | BSF_LOCAL)) == BSF_LOCAL) {
+        *error_message = "32bits gp relative relocation occurs for an external symbol";
+        return bfd_reloc_outofrange;
     }
-
-  if (output_bfd != NULL)
-    {
-      relocatable = true;
+    
+    if (!relocatable) {
+        output_bfd = input_section->output_section->owner;
     }
-  else
-    {
-      relocatable = false;
-      output_bfd = input_section->output_section->owner;
-    }
-
-  ret = mips_elf_final_gp (output_bfd, symbol, relocatable,
-			   error_message, &gp);
-  if (ret != bfd_reloc_ok)
-    return ret;
-
-  return gprel32_with_gp (abfd, symbol, reloc_entry, input_section,
-			  relocatable, data, gp);
+    
+    bfd_reloc_status_type ret = mips_elf_final_gp(output_bfd, symbol, relocatable, error_message, &gp);
+    if (ret != bfd_reloc_ok) return ret;
+    
+    return gprel32_with_gp(abfd, symbol, reloc_entry, input_section, relocatable, data, gp);
 }
 
-static bfd_reloc_status_type
-gprel32_with_gp (bfd *abfd, asymbol *symbol, arelent *reloc_entry,
-		 asection *input_section, bool relocatable,
-		 void *data, bfd_vma gp)
-{
-  bfd_vma relocation;
-  bfd_vma val;
-  bfd_byte *location;
+static bfd_reloc_status_type gprel32_with_gp(bfd *abfd, asymbol *symbol, arelent *reloc_entry, asection *input_section, bool relocatable, void *data, bfd_vma gp) {
+    bfd_vma relocation = bfd_is_com_section(symbol->section) ? 0 : symbol->value;
 
-  if (!abfd || !symbol || !reloc_entry || !input_section) {
-    return bfd_reloc_other;
-  }
-
-  relocation = bfd_is_com_section (symbol->section) ? 0 : symbol->value;
-
-  if (symbol->section->output_section != NULL)
-    {
-      relocation += symbol->section->output_section->vma;
-      relocation += symbol->section->output_offset;
+    if (symbol->section->output_section != NULL) {
+        relocation += symbol->section->output_section->vma + symbol->section->output_offset;
     }
 
-  if (!_bfd_mips_reloc_offset_in_range (abfd, input_section, reloc_entry,
-					check_inplace))
-    return bfd_reloc_outofrange;
-
-  val = reloc_entry->addend;
-
-  if (reloc_entry->howto->partial_inplace)
-    {
-      if (!data)
-        return bfd_reloc_other;
-      location = (bfd_byte *) data + reloc_entry->address;
-      val += bfd_get_32 (abfd, location);
+    if (!_bfd_mips_reloc_offset_in_range(abfd, input_section, reloc_entry, check_inplace)) {
+        return bfd_reloc_outofrange;
     }
 
-  if (! relocatable || (symbol->flags & BSF_SECTION_SYM) != 0)
-    val += relocation - gp;
+    bfd_vma val = reloc_entry->howto->partial_inplace
+        ? reloc_entry->addend + bfd_get_32(abfd, (bfd_byte *)data + reloc_entry->address)
+        : reloc_entry->addend;
 
-  if (reloc_entry->howto->partial_inplace)
-    {
-      location = (bfd_byte *) data + reloc_entry->address;
-      bfd_put_32 (abfd, val, location);
+    if (!relocatable || (symbol->flags & BSF_SECTION_SYM)) {
+        val += relocation - gp;
     }
-  else
-    reloc_entry->addend = val;
 
-  if (relocatable)
-    reloc_entry->address += input_section->output_offset;
+    if (reloc_entry->howto->partial_inplace) {
+        bfd_put_32(abfd, val, (bfd_byte *)data + reloc_entry->address);
+    } else {
+        reloc_entry->addend = val;
+    }
 
-  return bfd_reloc_ok;
+    if (relocatable) {
+        reloc_entry->address += input_section->output_offset;
+    }
+
+    return bfd_reloc_ok;
 }
 
 /* Handle a 64 bit reloc in a 32 bit MIPS ELF file.  These are
    generated when addresses are 64 bits.  The upper 32 bits are a simple
    sign extension.  */
 
-static bfd_reloc_status_type
-mips32_64bit_reloc (bfd *abfd, arelent *reloc_entry,
-		    asymbol *symbol ATTRIBUTE_UNUSED,
-		    void *data, asection *input_section,
-		    bfd *output_bfd, char **error_message)
-{
-  bfd_reloc_status_type r;
-  arelent reloc32;
-  unsigned long val;
-  bfd_size_type addr;
+static bfd_reloc_status_type mips32_64bit_reloc(bfd *abfd, arelent *reloc_entry,
+                                                asymbol *symbol ATTRIBUTE_UNUSED,
+                                                void *data, asection *input_section,
+                                                bfd *output_bfd, char **error_message) {
+    arelent reloc32;
+    unsigned long val;
+    bfd_size_type addr;
 
-  if (!abfd || !reloc_entry || !data) {
-    return bfd_reloc_dangerous;
-  }
+    // Initialize 32-bit relocation
+    reloc32 = *reloc_entry;
+    if (bfd_big_endian(abfd)) {
+        reloc32.address += 4;
+    }
+    reloc32.howto = &elf_mips_howto_table_rel[R_MIPS_32];
+    bfd_reloc_status_type r = bfd_perform_relocation(abfd, &reloc32, data, input_section,
+                                                     output_bfd, error_message);
+    if (r != bfd_reloc_ok) {
+        return r;
+    }
 
-  reloc32 = *reloc_entry;
-  if (bfd_big_endian (abfd))
-    reloc32.address += 4;
-  reloc32.howto = &elf_mips_howto_table_rel[R_MIPS_32];
-  r = bfd_perform_relocation (abfd, &reloc32, data, input_section,
-			      output_bfd, error_message);
+    // Sign extend into the upper 32 bits
+    val = bfd_get_32(abfd, (bfd_byte *)data + reloc32.address);
+    val = (val & 0x80000000) ? 0xffffffff : 0x0;
+    addr = reloc_entry->address;
+    if (bfd_little_endian(abfd)) {
+        addr += 4;
+    }
+    bfd_put_32(abfd, val, (bfd_byte *)data + addr);
 
-  if (r != bfd_reloc_ok) {
     return r;
-  }
-
-  val = bfd_get_32 (abfd, (bfd_byte *) data + reloc32.address);
-  val = (val & 0x80000000) ? 0xffffffff : 0;
-  
-  addr = reloc_entry->address;
-  if (bfd_little_endian (abfd))
-    addr += 4;
-  bfd_put_32 (abfd, val, (bfd_byte *) data + addr);
-
-  return r;
 }
 
 /* Handle a mips16 GP relative reloc.  */
 
-static bfd_reloc_status_type
-mips16_gprel_reloc (bfd *abfd, arelent *reloc_entry, asymbol *symbol,
-		    void *data, asection *input_section, bfd *output_bfd,
-		    char **error_message)
-{
-  bool relocatable;
-  bfd_reloc_status_type ret;
-  bfd_byte *location;
-  bfd_vma gp;
+static bfd_reloc_status_type mips16_gprel_reloc(bfd *abfd, arelent *reloc_entry, asymbol *symbol, void *data, asection *input_section, bfd *output_bfd, char **error_message) {
+    bool relocatable;
+    bfd_reloc_status_type ret;
+    bfd_byte *location;
+    bfd_vma gp;
 
-  if (!abfd || !reloc_entry || !symbol || !data || !input_section) {
-    if (error_message)
-      *error_message = "Invalid parameters";
-    return bfd_reloc_dangerous;
-  }
-
-  if (output_bfd != NULL
-      && (symbol->flags & BSF_SECTION_SYM) == 0
-      && (symbol->flags & BSF_LOCAL) != 0)
-    {
-      reloc_entry->address += input_section->output_offset;
-      return bfd_reloc_ok;
+    if (output_bfd != NULL && (symbol->flags & (BSF_SECTION_SYM | BSF_LOCAL)) == BSF_LOCAL) {
+        reloc_entry->address += input_section->output_offset;
+        return bfd_reloc_ok;
     }
 
-  if (output_bfd != NULL) {
-    relocatable = true;
-  } else {
-    relocatable = false;
-    if (!input_section->output_section) {
-      if (error_message)
-        *error_message = "Invalid output section";
-      return bfd_reloc_dangerous;
+    relocatable = (output_bfd != NULL);
+    if (!relocatable) {
+        output_bfd = input_section->output_section->owner;
     }
-    output_bfd = input_section->output_section->owner;
-  }
 
-  ret = mips_elf_final_gp (output_bfd, symbol, relocatable, error_message,
-			   &gp);
-  if (ret != bfd_reloc_ok)
+    ret = mips_elf_final_gp(output_bfd, symbol, relocatable, error_message, &gp);
+    if (ret != bfd_reloc_ok) return ret;
+
+    if (!_bfd_mips_reloc_offset_in_range(abfd, input_section, reloc_entry, check_shuffle))
+        return bfd_reloc_outofrange;
+
+    location = (bfd_byte *)data + reloc_entry->address;
+    _bfd_mips_elf_reloc_unshuffle(abfd, reloc_entry->howto->type, false, location);
+    ret = _bfd_mips_elf_gprel16_with_gp(abfd, symbol, reloc_entry, input_section, relocatable, data, gp);
+    _bfd_mips_elf_reloc_shuffle(abfd, reloc_entry->howto->type, !relocatable, location);
+
     return ret;
-
-  if (!_bfd_mips_reloc_offset_in_range (abfd, input_section, reloc_entry,
-					check_shuffle))
-    return bfd_reloc_outofrange;
-
-  location = (bfd_byte *) data + reloc_entry->address;
-  _bfd_mips_elf_reloc_unshuffle (abfd, reloc_entry->howto->type, false,
-				 location);
-  ret = _bfd_mips_elf_gprel16_with_gp (abfd, symbol, reloc_entry,
-				       input_section, relocatable,
-				       data, gp);
-  _bfd_mips_elf_reloc_shuffle (abfd, reloc_entry->howto->type, !relocatable,
-			       location);
-
-  return ret;
 }
 
 /* A mapping from BFD reloc types to MIPS ELF reloc types.  */
@@ -2105,227 +1991,142 @@ static const struct elf_reloc_map micromips_reloc_map[] =
 
 /* Given a BFD reloc type, return a howto structure.  */
 
-static reloc_howto_type *
-bfd_elf32_bfd_reloc_type_lookup (bfd *abfd, bfd_reloc_code_real_type code)
-{
-  const unsigned int mips_map_size = sizeof(mips_reloc_map) / sizeof(struct elf_reloc_map);
-  const unsigned int mips16_map_size = sizeof(mips16_reloc_map) / sizeof(struct elf_reloc_map);
-  const unsigned int micromips_map_size = sizeof(micromips_reloc_map) / sizeof(struct elf_reloc_map);
-  unsigned int i;
+static reloc_howto_type * bfd_elf32_bfd_reloc_type_lookup(bfd *abfd, bfd_reloc_code_real_type code) {
+    reloc_howto_type *howto_table = elf_mips_howto_table_rel;
+    reloc_howto_type *howto16_table = elf_mips16_howto_table_rel;
+    reloc_howto_type *howto_micromips_table = elf_micromips_howto_table_rel;
 
-  if (!abfd) {
-    bfd_set_error(bfd_error_bad_value);
+    static const struct {
+        const struct elf_reloc_map *map;
+        size_t size;
+        reloc_howto_type *table;
+    } reloc_maps[] = {
+        {mips_reloc_map, sizeof(mips_reloc_map) / sizeof(struct elf_reloc_map), howto_table},
+        {mips16_reloc_map, sizeof(mips16_reloc_map) / sizeof(struct elf_reloc_map), howto16_table},
+        {micromips_reloc_map, sizeof(micromips_reloc_map) / sizeof(struct elf_reloc_map), howto_micromips_table}
+    };
+
+    for (size_t j = 0; j < sizeof(reloc_maps) / sizeof(reloc_maps[0]); j++) {
+        const struct elf_reloc_map *map = reloc_maps[j].map;
+        reloc_howto_type *table = reloc_maps[j].table;
+        for (size_t i = 0; i < reloc_maps[j].size; i++) {
+            if (map[i].bfd_val == code)
+                return &table[(int)map[i].elf_val];
+        }
+    }
+
+    switch (code) {
+        case BFD_RELOC_CTOR:
+            return (elf_elfheader(abfd)->e_flags & (EF_MIPS_ABI_O64 | EF_MIPS_ABI_EABI64)) ? 
+                   &elf_mips_ctor64_howto : 
+                   &howto_table[(int)R_MIPS_32];
+        case BFD_RELOC_VTABLE_INHERIT:
+            return &elf_mips_gnu_vtinherit_howto;
+        case BFD_RELOC_VTABLE_ENTRY:
+            return &elf_mips_gnu_vtentry_howto;
+        case BFD_RELOC_32_PCREL:
+            return &elf_mips_gnu_pcrel32;
+        case BFD_RELOC_MIPS_COPY:
+            return &elf_mips_copy_howto;
+        case BFD_RELOC_MIPS_JUMP_SLOT:
+            return &elf_mips_jump_slot_howto;
+        case BFD_RELOC_MIPS_EH:
+            return &elf_mips_eh_howto;
+        default:
+            bfd_set_error(bfd_error_bad_value);
+            return NULL;
+    }
+}
+
+static reloc_howto_type * bfd_elf32_bfd_reloc_name_lookup(bfd *abfd ATTRIBUTE_UNUSED, const char *r_name) {
+    unsigned int i;
+    
+    struct HowtoTable {
+        reloc_howto_type *table;
+        size_t count;
+    } howto_tables[] = {
+        {elf_mips_howto_table_rel, sizeof(elf_mips_howto_table_rel) / sizeof(elf_mips_howto_table_rel[0])},
+        {elf_mips16_howto_table_rel, sizeof(elf_mips16_howto_table_rel) / sizeof(elf_mips16_howto_table_rel[0])},
+        {elf_micromips_howto_table_rel, sizeof(elf_micromips_howto_table_rel) / sizeof(elf_micromips_howto_table_rel[0])}
+    };
+    
+    for (size_t table_index = 0; table_index < sizeof(howto_tables) / sizeof(howto_tables[0]); table_index++) {
+        for (i = 0; i < howto_tables[table_index].count; i++) {
+            if (howto_tables[table_index].table[i].name != NULL &&
+                strcasecmp(howto_tables[table_index].table[i].name, r_name) == 0) {
+                return &howto_tables[table_index].table[i];
+            }
+        }
+    }
+    
+    reloc_howto_type *fixed_howtos[] = {
+        &elf_mips_gnu_pcrel32, &elf_mips_gnu_rel16_s2, &elf_mips_gnu_vtinherit_howto,
+        &elf_mips_gnu_vtentry_howto, &elf_mips_copy_howto,
+        &elf_mips_jump_slot_howto, &elf_mips_eh_howto
+    };
+    
+    for (i = 0; i < sizeof(fixed_howtos) / sizeof(fixed_howtos[0]); i++) {
+        if (strcasecmp(fixed_howtos[i]->name, r_name) == 0) {
+            return fixed_howtos[i];
+        }
+    }
+
     return NULL;
-  }
+}
 
-  for (i = 0; i < mips_map_size; i++) {
-    if (mips_reloc_map[i].bfd_val == code) {
-      const int elf_val = (int)mips_reloc_map[i].elf_val;
-      if (elf_val >= 0) {
-        return &elf_mips_howto_table_rel[elf_val];
-      }
-    }
-  }
+/* Given a MIPS Elf_Internal_Rel, fill in an arelent structure.  */
 
-  for (i = 0; i < mips16_map_size; i++) {
-    if (mips16_reloc_map[i].bfd_val == code) {
-      const int elf_val = (int)mips16_reloc_map[i].elf_val;
-      if (elf_val >= 0) {
-        return &elf_mips16_howto_table_rel[elf_val];
-      }
-    }
-  }
+static reloc_howto_type *mips_elf32_rtype_to_howto (bfd *abfd, unsigned int r_type, bool rela_p ATTRIBUTE_UNUSED) {
+  switch (r_type) {
+    case R_MIPS_GNU_VTINHERIT: return &elf_mips_gnu_vtinherit_howto;
+    case R_MIPS_GNU_VTENTRY: return &elf_mips_gnu_vtentry_howto;
+    case R_MIPS_GNU_REL16_S2: return &elf_mips_gnu_rel16_s2;
+    case R_MIPS_PC32: return &elf_mips_gnu_pcrel32;
+    case R_MIPS_COPY: return &elf_mips_copy_howto;
+    case R_MIPS_JUMP_SLOT: return &elf_mips_jump_slot_howto;
+    case R_MIPS_EH: return &elf_mips_eh_howto;
+    default: 
+      reloc_howto_type *howto = NULL;
+      if (r_type >= R_MICROMIPS_min && r_type < R_MICROMIPS_max) 
+        howto = &elf_micromips_howto_table_rel[r_type - R_MICROMIPS_min];
+      else if (r_type >= R_MIPS16_min && r_type < R_MIPS16_max) 
+        howto = &elf_mips16_howto_table_rel[r_type - R_MIPS16_min];
+      else if (r_type < R_MIPS_max) 
+        howto = &elf_mips_howto_table_rel[r_type];
 
-  for (i = 0; i < micromips_map_size; i++) {
-    if (micromips_reloc_map[i].bfd_val == code) {
-      const int elf_val = (int)micromips_reloc_map[i].elf_val;
-      if (elf_val >= 0) {
-        return &elf_micromips_howto_table_rel[elf_val];
-      }
-    }
-  }
+      if (howto && howto->name) return howto;
 
-  switch (code) {
-    case BFD_RELOC_CTOR:
-      if ((elf_elfheader(abfd)->e_flags & (EF_MIPS_ABI_O64 | EF_MIPS_ABI_EABI64)) != 0) {
-        return &elf_mips_ctor64_howto;
-      } else {
-        return &elf_mips_howto_table_rel[(int)R_MIPS_32];
-      }
-
-    case BFD_RELOC_VTABLE_INHERIT:
-      return &elf_mips_gnu_vtinherit_howto;
-
-    case BFD_RELOC_VTABLE_ENTRY:
-      return &elf_mips_gnu_vtentry_howto;
-
-    case BFD_RELOC_32_PCREL:
-      return &elf_mips_gnu_pcrel32;
-
-    case BFD_RELOC_MIPS_COPY:
-      return &elf_mips_copy_howto;
-
-    case BFD_RELOC_MIPS_JUMP_SLOT:
-      return &elf_mips_jump_slot_howto;
-
-    case BFD_RELOC_MIPS_EH:
-      return &elf_mips_eh_howto;
-
-    default:
-      bfd_set_error(bfd_error_bad_value);
+      _bfd_error_handler (_("%pB: unsupported relocation type %#x"), abfd, r_type);
+      bfd_set_error (bfd_error_bad_value);
       return NULL;
   }
 }
 
-static reloc_howto_type *
-search_howto_table(const reloc_howto_type *table, size_t table_size, const char *r_name)
-{
-  size_t i;
-  
-  for (i = 0; i < table_size; i++) {
-    if (table[i].name != NULL && strcasecmp(table[i].name, r_name) == 0) {
-      return (reloc_howto_type *)&table[i];
-    }
-  }
-  return NULL;
-}
-
-static reloc_howto_type *
-bfd_elf32_bfd_reloc_name_lookup(bfd *abfd ATTRIBUTE_UNUSED, const char *r_name)
-{
-  reloc_howto_type *result;
-  
-  const reloc_howto_type *special_howtos[] = {
-    &elf_mips_gnu_pcrel32,
-    &elf_mips_gnu_rel16_s2,
-    &elf_mips_gnu_vtinherit_howto,
-    &elf_mips_gnu_vtentry_howto,
-    &elf_mips_copy_howto,
-    &elf_mips_jump_slot_howto,
-    &elf_mips_eh_howto
-  };
-  size_t i;
-  
-  if (r_name == NULL) {
-    return NULL;
-  }
-  
-  result = search_howto_table(elf_mips_howto_table_rel,
-                             sizeof(elf_mips_howto_table_rel) / sizeof(elf_mips_howto_table_rel[0]),
-                             r_name);
-  if (result != NULL) {
-    return result;
-  }
-  
-  result = search_howto_table(elf_mips16_howto_table_rel,
-                             sizeof(elf_mips16_howto_table_rel) / sizeof(elf_mips16_howto_table_rel[0]),
-                             r_name);
-  if (result != NULL) {
-    return result;
-  }
-  
-  result = search_howto_table(elf_micromips_howto_table_rel,
-                             sizeof(elf_micromips_howto_table_rel) / sizeof(elf_micromips_howto_table_rel[0]),
-                             r_name);
-  if (result != NULL) {
-    return result;
-  }
-  
-  for (i = 0; i < sizeof(special_howtos) / sizeof(special_howtos[0]); i++) {
-    if (strcasecmp(special_howtos[i]->name, r_name) == 0) {
-      return (reloc_howto_type *)special_howtos[i];
-    }
-  }
-  
-  return NULL;
-}
-
 /* Given a MIPS Elf_Internal_Rel, fill in an arelent structure.  */
 
-static reloc_howto_type *
-mips_elf32_rtype_to_howto (bfd *abfd,
-			   unsigned int r_type,
-			   bool rela_p ATTRIBUTE_UNUSED)
-{
-  switch (r_type)
-    {
-    case R_MIPS_GNU_VTINHERIT:
-      return &elf_mips_gnu_vtinherit_howto;
-    case R_MIPS_GNU_VTENTRY:
-      return &elf_mips_gnu_vtentry_howto;
-    case R_MIPS_GNU_REL16_S2:
-      return &elf_mips_gnu_rel16_s2;
-    case R_MIPS_PC32:
-      return &elf_mips_gnu_pcrel32;
-    case R_MIPS_COPY:
-      return &elf_mips_copy_howto;
-    case R_MIPS_JUMP_SLOT:
-      return &elf_mips_jump_slot_howto;
-    case R_MIPS_EH:
-      return &elf_mips_eh_howto;
+static bool mips_info_to_howto_rel(bfd *abfd, arelent *cache_ptr, Elf_Internal_Rela *dst) {
+    unsigned int r_type = ELF32_R_TYPE(dst->r_info);
+    cache_ptr->howto = mips_elf32_rtype_to_howto(abfd, r_type, false);
+
+    if (!cache_ptr->howto) {
+        return false;
     }
 
-  if (r_type >= R_MICROMIPS_min && r_type < R_MICROMIPS_max)
-    {
-      reloc_howto_type *howto = &elf_micromips_howto_table_rel[r_type - R_MICROMIPS_min];
-      if (howto->name != NULL)
-        return howto;
+    if (((*cache_ptr->sym_ptr_ptr)->flags & BSF_SECTION_SYM) && 
+        (gprel16_reloc_p(r_type) || literal_reloc_p(r_type))) {
+        cache_ptr->addend = elf_gp(abfd);
     }
 
-  if (r_type >= R_MIPS16_min && r_type < R_MIPS16_max)
-    {
-      reloc_howto_type *howto = &elf_mips16_howto_table_rel[r_type - R_MIPS16_min];
-      if (howto->name != NULL)
-        return howto;
-    }
-
-  if (r_type < R_MIPS_max)
-    {
-      reloc_howto_type *howto = &elf_mips_howto_table_rel[r_type];
-      if (howto->name != NULL)
-        return howto;
-    }
-
-  _bfd_error_handler (_("%pB: unsupported relocation type %#x"),
-		      abfd, r_type);
-  bfd_set_error (bfd_error_bad_value);
-  return NULL;
-}
-
-/* Given a MIPS Elf_Internal_Rel, fill in an arelent structure.  */
-
-static bool
-mips_info_to_howto_rel (bfd *abfd, arelent *cache_ptr, Elf_Internal_Rela *dst)
-{
-  unsigned int r_type;
-
-  if (!abfd || !cache_ptr || !dst)
-    return false;
-
-  r_type = ELF32_R_TYPE (dst->r_info);
-  cache_ptr->howto = mips_elf32_rtype_to_howto (abfd, r_type, false);
-
-  if (cache_ptr->howto == NULL)
-    return false;
-
-  if (cache_ptr->sym_ptr_ptr && *cache_ptr->sym_ptr_ptr &&
-      ((*cache_ptr->sym_ptr_ptr)->flags & BSF_SECTION_SYM) != 0 &&
-      (gprel16_reloc_p (r_type) || literal_reloc_p (r_type)))
-    cache_ptr->addend = elf_gp (abfd);
-
-  return true;
+    return true;
 }
 
 /* Given a MIPS Elf_Internal_Rela, fill in an arelent structure.  */
 
-static bool
-mips_info_to_howto_rela (bfd *abfd, arelent *cache_ptr, Elf_Internal_Rela *dst)
-{
+static bool mips_info_to_howto_rela(bfd *abfd, arelent *cache_ptr, Elf_Internal_Rela *dst) {
   if (!abfd || !cache_ptr || !dst) {
     return false;
   }
-  
-  return mips_info_to_howto_rel (abfd, cache_ptr, dst);
+  return mips_info_to_howto_rel(abfd, cache_ptr, dst);
 }
 
 /* Determine whether a symbol is global for the purposes of splitting
@@ -2334,206 +2135,152 @@ mips_info_to_howto_rela (bfd *abfd, arelent *cache_ptr, Elf_Internal_Rela *dst)
    symbols.  On most ELF targets the split is between static symbols
    and externally visible symbols.  */
 
-static bool
-mips_elf_sym_is_global (bfd *abfd ATTRIBUTE_UNUSED, asymbol *sym)
-{
-  if (!sym)
-    return false;
-
-  if (SGI_COMPAT (abfd))
-    return (sym->flags & BSF_SECTION_SYM) == 0;
-
-  const flagword global_flags = BSF_GLOBAL | BSF_WEAK | BSF_GNU_UNIQUE;
-  if (sym->flags & global_flags)
-    return true;
-
-  asection *section = bfd_asymbol_section (sym);
-  if (!section)
-    return false;
-
-  return bfd_is_und_section (section) || bfd_is_com_section (section);
+static bool mips_elf_sym_is_global(bfd *abfd ATTRIBUTE_UNUSED, asymbol *sym) {
+    bool is_sgi_compat = SGI_COMPAT(abfd);
+    bool is_global_sym_flag_set = (sym->flags & BSF_SECTION_SYM) == 0;
+    bool is_special_sections = bfd_is_und_section(bfd_asymbol_section(sym)) || bfd_is_com_section(bfd_asymbol_section(sym));
+    bool has_global_weak_unique_flags = (sym->flags & (BSF_GLOBAL | BSF_WEAK | BSF_GNU_UNIQUE)) != 0;
+    
+    return is_sgi_compat ? is_global_sym_flag_set : (has_global_weak_unique_flags || is_special_sections);
 }
 
 /* Likewise, return TRUE if the symbol table split overall must be
    between section symbols and all other symbols.  */
-static bool
-mips_elf32_elfsym_local_is_section (bfd *abfd)
-{
-  if (abfd == NULL)
-    return false;
-  
-  return SGI_COMPAT (abfd);
+bool mips_elf32_elfsym_local_is_section(bfd *abfd) {
+    return SGI_COMPAT(abfd) ? true : false;
 }
 
 /* Set the right machine number for a MIPS ELF file.  */
 
-static bool
-mips_elf32_object_p (bfd *abfd)
-{
-  unsigned long mach;
+#include <stdbool.h>
 
-  if (abfd == NULL)
-    return false;
+static bool mips_elf32_object_p(bfd *abfd) {
+    if (!abfd) {
+        return false;
+    }
 
-  if (ABI_N32_P (abfd))
-    return false;
+    if (ABI_N32_P(abfd)) {
+        return false;
+    }
 
-  if (SGI_COMPAT (abfd))
-    elf_bad_symtab (abfd) = true;
+    if (SGI_COMPAT(abfd)) {
+        elf_bad_symtab(abfd) = true;
+    }
 
-  mach = _bfd_elf_mips_mach (elf_elfheader (abfd)->e_flags);
-  if (!bfd_default_set_arch_mach (abfd, bfd_arch_mips, mach))
-    return false;
-
-  return true;
+    unsigned long mach = _bfd_elf_mips_mach(elf_elfheader(abfd)->e_flags);
+    if (!bfd_default_set_arch_mach(abfd, bfd_arch_mips, mach)) {
+        return false;
+    }
+    
+    return true;
 }
 
 /* MIPS ELF local labels start with '$', not 'L'.  */
 
-static bool
-mips_elf_is_local_label_name (bfd *abfd, const char *name)
-{
-  if (name == NULL)
-    return false;
-  
-  if (name[0] == '$')
-    return true;
+#include <stdbool.h>
+#include <stddef.h>
 
-  return _bfd_elf_is_local_label_name (abfd, name);
+static bool is_special_local_label(const char *name) {
+  return name != NULL && name[0] == '$';
+}
+
+static bool mips_elf_is_local_label_name(bfd *abfd, const char *name) {
+  return is_special_local_label(name) || _bfd_elf_is_local_label_name(abfd, name);
 }
 
 /* Support for core dump NOTE sections.  */
-static bool
-elf32_mips_grok_prstatus (bfd *abfd, Elf_Internal_Note *note)
-{
-  int offset;
-  unsigned int size;
+static bool elf32_mips_grok_prstatus(bfd *abfd, Elf_Internal_Note *note) {
+    if (note->descsz != 256) {
+        return false;
+    }
 
-  if (!abfd || !note || !note->descdata) {
-    return false;
-  }
+    // Extract pr_cursig and pr_pid
+    elf_tdata(abfd)->core->signal = bfd_get_16(abfd, note->descdata + 12);
+    elf_tdata(abfd)->core->lwpid = bfd_get_32(abfd, note->descdata + 24);
 
-  if (note->descsz != 256) {
-    return false;
-  }
+    // pr_reg offset and size for Linux/MIPS
+    int offset = 72;
+    unsigned int size = 180;
 
-  /* Linux/MIPS */
-  /* pr_cursig */
-  elf_tdata (abfd)->core->signal = bfd_get_16 (abfd, note->descdata + 12);
-
-  /* pr_pid */
-  elf_tdata (abfd)->core->lwpid = bfd_get_32 (abfd, note->descdata + 24);
-
-  /* pr_reg */
-  offset = 72;
-  size = 180;
-
-  /* Make a ".reg/999" section.  */
-  return _bfd_elfcore_make_pseudosection (abfd, ".reg",
-                                          size, note->descpos + offset);
+    // Create a ".reg/999" section
+    return _bfd_elfcore_make_pseudosection(abfd, ".reg", size, note->descpos + offset);
 }
 
-static bool
-elf32_mips_grok_psinfo (bfd *abfd, Elf_Internal_Note *note)
-{
-  char *command;
-  int n;
+static bool elf32_mips_grok_psinfo(bfd *abfd, Elf_Internal_Note *note) {
+    if (note->descsz != 128) {
+        return false;
+    }
 
-  if (!abfd || !note || !note->descdata)
-    return false;
+    elf_tdata(abfd)->core->pid = bfd_get_32(abfd, note->descdata + 16);
+    elf_tdata(abfd)->core->program = _bfd_elfcore_strndup(abfd, note->descdata + 32, 16);
+    elf_tdata(abfd)->core->command = _bfd_elfcore_strndup(abfd, note->descdata + 48, 80);
 
-  if (note->descsz != 128)
-    return false;
+    char *command = elf_tdata(abfd)->core->command;
+    if (command != NULL) {
+        size_t n = strlen(command);
+        if (n > 0 && command[n - 1] == ' ') {
+            command[n - 1] = '\0';
+        }
+    }
 
-  if (!elf_tdata(abfd) || !elf_tdata(abfd)->core)
-    return false;
-
-  elf_tdata(abfd)->core->pid = bfd_get_32(abfd, note->descdata + 16);
-  elf_tdata(abfd)->core->program = _bfd_elfcore_strndup(abfd, note->descdata + 32, 16);
-  elf_tdata(abfd)->core->command = _bfd_elfcore_strndup(abfd, note->descdata + 48, 80);
-
-  if (!elf_tdata(abfd)->core->command)
-    return false;
-
-  command = elf_tdata(abfd)->core->command;
-  n = strlen(command);
-
-  if (n > 0 && command[n - 1] == ' ')
-    command[n - 1] = '\0';
-
-  return true;
+    return true;
 }
 
 /* Write Linux core PRSTATUS note into core file.  */
 
-static char *
-elf32_mips_write_core_note (bfd *abfd, char *buf, int *bufsiz, int note_type,
-                             ...)
-{
-  char data[256];
-  va_list ap;
-  long pid;
-  int cursig;
-  const void *greg;
-
-  switch (note_type)
-    {
-    case NT_PRPSINFO:
-      BFD_FAIL ();
-      return NULL;
-
-    case NT_PRSTATUS:
-      if (!abfd || !buf || !bufsiz)
+static char *elf32_mips_write_core_note(bfd *abfd, char *buf, int *bufsiz, int note_type, ...) {
+    if (note_type != NT_PRSTATUS) {
         return NULL;
-
-      va_start (ap, note_type);
-      memset (data, 0, sizeof (data));
-      
-      pid = va_arg (ap, long);
-      bfd_put_32 (abfd, pid, data + 24);
-      
-      cursig = va_arg (ap, int);
-      bfd_put_16 (abfd, cursig, data + 12);
-      
-      greg = va_arg (ap, const void *);
-      if (greg)
-        memcpy (data + 72, greg, 180);
-      
-      va_end (ap);
-      
-      return elfcore_write_note (abfd, buf, bufsiz,
-                                 "CORE", note_type, data, sizeof (data));
-
-    default:
-      return NULL;
     }
+    
+    char data[256];
+    va_list ap;
+    va_start(ap, note_type);
+
+    memset(data, 0, sizeof(data));
+    
+    long pid = va_arg(ap, long);
+    bfd_put_32(abfd, pid, data + 24);
+    
+    int cursig = va_arg(ap, int);
+    bfd_put_16(abfd, cursig, data + 12);
+
+    const void *greg = va_arg(ap, const void *);
+    memcpy(data + 72, greg, 180);
+    
+    va_end(ap);
+
+    return elfcore_write_note(abfd, buf, bufsiz, "CORE", note_type, data, sizeof(data));
 }
 
 /* Remove the magic _gp_disp symbol from the symbol tables.  */
 
-static bool
-elf32_mips_fixup_symbol (struct bfd_link_info *info,
-			 struct elf_link_hash_entry *h)
-{
-  if (info == NULL || h == NULL || h->root.root.string == NULL)
+#include <stdbool.h>
+#include <string.h>
+
+static bool elf32_mips_fixup_symbol(struct bfd_link_info *info, struct elf_link_hash_entry *h) {
+  if (h == NULL || info == NULL || h->root.root.string == NULL) {
     return false;
-    
-  if (strcmp (h->root.root.string, "_gp_disp") == 0)
-    _bfd_elf_link_hash_hide_symbol (info, h, true);
+  }
+
+  if (strcmp(h->root.root.string, "_gp_disp") == 0) {
+    _bfd_elf_link_hash_hide_symbol(info, h, true);
+  }
+
   return true;
 }
 
 /* Depending on the target vector we generate some version of Irix
    executables or "normal" MIPS ELF ABI executables.  */
-static irix_compat_t
-elf32_mips_irix_compat (bfd *abfd)
-{
-  if (abfd == NULL || abfd->xvec == NULL)
+static irix_compat_t elf32_mips_irix_compat(bfd *abfd) {
+  if (abfd == NULL) {
     return ict_none;
-    
-  if (abfd->xvec == &mips_elf32_be_vec || abfd->xvec == &mips_elf32_le_vec)
+  }
+
+  if (abfd->xvec == &mips_elf32_be_vec || abfd->xvec == &mips_elf32_le_vec) {
     return ict_irix5;
-    
+  }
+
   return ict_none;
 }
 
@@ -2738,14 +2485,11 @@ static const struct ecoff_debug_swap mips_elf32_ecoff_debug_swap = {
 #include "elf32-target.h"
 /* Implement elf_backend_final_write_processing for VxWorks.  */
 
-static bool
-mips_vxworks_final_write_processing (bfd *abfd)
-{
-  if (!abfd)
-    return false;
-    
-  _bfd_mips_final_write_processing (abfd);
-  return elf_vxworks_final_write_processing (abfd);
+static bool mips_vxworks_final_write_processing(bfd *abfd) {
+    if (!_bfd_mips_final_write_processing(abfd)) {
+        return false;
+    }
+    return elf_vxworks_final_write_processing(abfd);
 }
 
 #undef TARGET_LITTLE_SYM
